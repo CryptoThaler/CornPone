@@ -14,6 +14,10 @@ export const VIA_API = {
   // VIA REST API (Swagger: https://gtfsapi.viainfo.net/index.html)
   REST_BASE: "https://gtfsapi.viainfo.net",
 
+  // VIA ArcGIS Open Data (bus stops/routes GIS layers)
+  // https://data-viatransit.opendata.arcgis.com/
+  ARCGIS_OPEN_DATA: "https://data-viatransit.opendata.arcgis.com",
+
   // Refresh intervals (milliseconds)
   VEHICLE_REFRESH_MS: 10_000, // 10 seconds for live bus positions
   ALERTS_REFRESH_MS: 30_000, // 30 seconds for service alerts
@@ -26,8 +30,12 @@ export const VIA_API = {
 export const BIKE_API = {
   FACILITIES_GEOJSON:
     "https://opendata-cosagis.opendata.arcgis.com/api/download/v1/items/754d5490121e44b8b6f3712934b24839/geojson?layers=0",
+  FACILITIES_CSV:
+    "https://opendata-cosagis.opendata.arcgis.com/api/download/v1/items/8b498e0c26c6400a8bf2acd7fc784003/csv?layers=0",
   FACILITIES_FEATURE_SERVER:
     "https://services.arcgis.com/g1fRTDLeMgspWrYp/arcgis/rest/services/BikeFacilities/FeatureServer/0/query",
+  // SA Bike Network Plan: https://sabikenetwork.com/
+  // Interactive map: https://gis.sanantonio.gov/TCI/Bike/index.html
 } as const;
 
 // San Antonio map center coordinates
