@@ -164,8 +164,147 @@ This enables **monetized MCP servers** — any MCP tool provider can charge per-
 - **Visa**: Extended MPP to support card payments
 - **Lightspark**: Extended MPP for Bitcoin Lightning payments
 
+## x402 Deep Dive
+
+### x402 Protocol Flow (12 Steps)
+
+1. Client requests resource from server
+2. Server responds `402` + `PAYMENT-REQUIRED` header (Base64 JSON)
+3. Client selects a PaymentRequirement and creates PaymentPayload
+4. Client retries with `PAYMENT-SIGNATURE` header
+5. Server verifies payload locally or via facilitator `/verify` endpoint
+6. Facilitator validates based on scheme and network
+7. Server fulfills request if verification succeeds
+8. Server settles payment via facilitator `/settle` endpoint
+9. Facilitator submits transaction to blockchain
+10. Facilitator awaits confirmation
+11. Facilitator returns execution response
+12. Server returns `200 OK` with `PAYMENT-RESPONSE` header
+
+### x402 Headers
+
+| Header | Direction | Content |
+|---|---|---|
+| `PAYMENT-REQUIRED` | Server → Client | Base64 payment requirements (in 402 response) |
+| `PAYMENT-SIGNATURE` | Client → Server | Base64 payment payload (retry request) |
+| `PAYMENT-RESPONSE` | Server → Client | Base64 settlement response (200 response) |
+
+### x402 Payment Schemes
+
+- **`exact`** — Fixed amount (e.g., $1 per article)
+- **`upto`** — Variable based on consumption (e.g., LLM token billing)
+
+### x402 Server Example (Express)
+
+```javascript
+import express from "express";
+import { paymentMiddleware, x402ResourceServer } from "@x402/express";
+import { ExactEvmScheme } from "@x402/evm/exact/server";
+import { HTTPFacilitatorClient } from "@x402/core/server";
+
+const app = express();
+const facilitatorClient = new HTTPFacilitatorClient({
+  url: "https://facilitator.x402.org"
+});
+const resourceServer = new x402ResourceServer(facilitatorClient)
+  .register("eip155:84532", new ExactEvmScheme());
+
+app.use(
+  paymentMiddleware(
+    {
+      "GET /protected-route": {
+        accepts: { scheme: "exact", price: "$0.10", network: "eip155:84532", payTo: "0xYourAddress" },
+        description: "Access to premium content",
+      },
+    },
+    resourceServer,
+  ),
+);
+```
+
+### x402 Ecosystem Stats
+
+- 35M+ transactions and $10M+ volume on Solana since launch
+- SDKs: TypeScript, Python, Go
+- Supported networks: Base, Polygon, Solana
+- Coinbase hosts facilitator with free tier of 1,000 tx/month
+
+## Tempo Network Technical Details
+
+| Feature | Detail |
+|---|---|
+| **Throughput** | 100K+ TPS |
+| **Finality** | Sub-1 second |
+| **Consensus** | Simplex (low-latency), transitioning to permissionless PoS |
+| **Execution** | EVM-compatible (Solidity), built on Paradigm's Reth client |
+| **Token standard** | TIP-20 (enshrined stablecoin standard with memo/reconciliation) |
+| **Gas fees** | Payable in any stablecoin via enshrined AMM — no native gas token |
+| **Privacy** | Opt-in privacy features |
+| **Compliance** | ISO 20022 compliant, access control lists planned |
+| **Payment lanes** | Dedicated tx lanes ensuring payments always have blockspace |
+
+Tempo = Stripe's capstone: **Tempo** (L1 chain) + **Bridge** (stablecoin orchestration) + **Privy** (wallet infrastructure) = full-stack stablecoin settlement.
+
+## SPT Technical Details
+
+1. Customer provides payment method to agent (card, BNPL via Affirm/Klarna, wallet)
+2. Agent creates SPT via Stripe API — scoped to: specific seller, transaction amount, short expiration
+3. SPT passed to seller (in ACP `CompleteCheckout` call or MPP payment)
+4. Seller creates PaymentIntent using SPT
+5. Stripe clones the payment method — seller never sees raw credentials
+
+```bash
+curl https://api.stripe.com/v1/test_helpers/shared_payment/tokens \
+  -u "sk_test_..." \
+  -d payment_method=pm_card_visa \
+  -d "usage_limits[currency]"=usd \
+  -d "usage_limits[max_amount]"=10000 \
+  -d "usage_limits[expires_at]"={{TIME_IN_FUTURE}} \
+  -d "seller_details[network_id]"=internal \
+  -d "seller_details[external_id]"={{ANY_STRING}}
+```
+
+## ACP (Agentic Commerce Protocol) — Product Commerce Layer
+
+Co-developed by Stripe and OpenAI. Four endpoints:
+
+1. **CreateCheckout** — Agent sends SKU; seller returns cart, payment methods, fulfillment options
+2. **UpdateCheckout** — Modify quantities, shipping, customer details
+3. **CompleteCheckout** — Agent provisions SPT and completes purchase
+4. **CancelCheckout** — Agent notifies seller; seller releases inventory
+
+First live integration: OpenAI's Instant Checkout in ChatGPT (Etsy, Shopify merchants).
+
+## MCP Payment Integration Patterns
+
+### Worldpay MCP Server
+- `take_guest_payment` — process payment via Worldpay API
+- `generateCheckoutForm` — create checkout UI code
+- Follow-on tools for settlement, cancel, refund via action links
+
+### Agent Wallet SDK (`@agentauth/wallet`)
+- Non-custodial USDC wallet as MCP tool server
+- Spending policies with per-tx caps and daily limits
+- Native x402 support: detects 402, checks policy, signs USDC transfer, retries
+
+### PayGated (`paygated.dev`)
+- "Monetize any MCP server with one command"
+- Adds API key auth, credit billing, rate limiting as a proxy
+
+## Full Competitive Landscape (March 2026)
+
+| Protocol | Creator | Payment Rails | Primary Use | Transport |
+|---|---|---|---|---|
+| **MPP** | Stripe + Tempo | Stablecoins, cards, Lightning | Pay-per-call APIs | HTTP 402 |
+| **x402** | Coinbase | USDC on Base/Polygon/Solana | API monetization | HTTP 402 |
+| **ACP** | Stripe + OpenAI | Cards, wallets, BNPL via SPTs | E-commerce checkout | REST / MCP |
+| **UCP** | Google | Cards, stablecoins | Full commerce | REST / A2A / MCP |
+| **AP2** | Google Cloud | Cards, stablecoins | Payment orchestration | gRPC / REST |
+
 ## Key Insight
 
 MPP turns every HTTP endpoint into a potential point-of-sale. Combined with MCP, it creates an economy where agents can autonomously discover, negotiate, pay for, and consume services — the same way humans browse, evaluate, and purchase on the web, but at machine speed and scale.
 
 The session primitive is the critical innovation: by aggregating thousands of micropayments into single settlements, MPP makes true pay-per-use economics viable at internet scale. This is what enables business models like "pay $0.001 per API call" that were previously impractical due to transaction costs.
+
+Stripe supporting **both** MPP and x402, plus ACP for product commerce, positions them as the universal settlement layer for the agent economy — regardless of which protocol wins.

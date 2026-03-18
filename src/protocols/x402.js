@@ -1,16 +1,19 @@
 /**
  * x402 Protocol Client
  *
- * Implements the x402 HTTP 402 payment flow (Coinbase/Cloudflare standard):
+ * Implements the x402 HTTP 402 payment flow (Coinbase/Cloudflare/Google standard):
  * 1. Client requests a resource
- * 2. Server responds with HTTP 402 + payment requirements in headers/body
- * 3. Client signs a payment authorization with crypto wallet
- * 4. Client retries with payment proof in X-PAYMENT header
- * 5. Facilitator verifies payment, server delivers resource
+ * 2. Server responds HTTP 402 + PAYMENT-REQUIRED header (Base64 JSON requirements)
+ * 3. Client selects PaymentRequirement and creates signed PaymentPayload
+ * 4. Client retries with PAYMENT-SIGNATURE header (Base64 payload)
+ * 5. Server verifies via facilitator /verify endpoint
+ * 6. Server settles via facilitator /settle endpoint (on-chain tx)
+ * 7. Server returns 200 + PAYMENT-RESPONSE header (Base64 settlement receipt)
  *
- * x402 differs from MPP in that it uses on-chain stablecoin payments
- * verified by a facilitator (e.g., Coinbase), whereas MPP uses Stripe's
- * PaymentIntents with the Tempo network for settlement.
+ * x402 differs from MPP: on-chain USDC settlement via facilitator (Coinbase)
+ * vs MPP's Stripe PaymentIntents + Tempo network.
+ * Supported networks: Base, Polygon, Solana (ERC-20/SPL stablecoins).
+ * Payment schemes: "exact" (fixed price) and "upto" (variable/consumption-based).
  */
 
 /**
@@ -43,7 +46,7 @@ export class X402Client {
     this.walletAddress = config.walletAddress;
     this.signPayment = config.signPayment;
     this.network = config.network || 'base';
-    this.facilitatorUrl = config.facilitatorUrl || null;
+    this.facilitatorUrl = config.facilitatorUrl || 'https://facilitator.x402.org';
     this.fetch = config.fetch || globalThis.fetch;
     this.payments = [];
   }
@@ -69,25 +72,32 @@ export class X402Client {
       return { response: initialResponse, payment: null };
     }
 
-    // Step 2: Parse payment requirements
+    // Step 2: Parse payment requirements from PAYMENT-REQUIRED header or body
     const requirements = await this._parsePaymentRequired(initialResponse);
 
     // Step 3: Select scheme and create signed payment
     const paymentPayload = await this._createPayment(requirements);
 
-    // Step 4: Retry with payment proof
+    // Step 4: Retry with PAYMENT-SIGNATURE header (x402 spec)
+    const encodedPayload = Buffer.from(JSON.stringify(paymentPayload)).toString('base64');
     const paidResponse = await this.fetch(url, {
       ...options,
       headers: {
         ...options.headers,
-        'X-PAYMENT': Buffer.from(JSON.stringify(paymentPayload)).toString('base64'),
+        'PAYMENT-SIGNATURE': encodedPayload,
+        // Legacy header for backwards compatibility
+        'X-PAYMENT': encodedPayload,
         'Accept': 'application/json',
       },
     });
 
+    // Step 5: Extract settlement receipt from PAYMENT-RESPONSE header
+    const settlementReceipt = this._extractSettlementReceipt(paidResponse);
+
     this.payments.push({
       url,
       ...paymentPayload,
+      settlementReceipt,
       timestamp: new Date().toISOString(),
       status: paidResponse.ok ? 'settled' : 'failed',
     });
@@ -102,14 +112,25 @@ export class X402Client {
    * @private
    */
   async _parsePaymentRequired(response) {
-    const body = await response.json();
+    // x402 spec: requirements in PAYMENT-REQUIRED header (Base64) or body
+    const headerValue = response.headers?.get?.('PAYMENT-REQUIRED');
+    let body;
+    if (headerValue) {
+      try {
+        body = JSON.parse(Buffer.from(headerValue, 'base64').toString());
+      } catch {
+        body = await response.json();
+      }
+    } else {
+      body = await response.json();
+    }
 
     return {
       scheme: body.scheme || body.accepts?.[0]?.scheme || 'exact',
       network: body.network || body.accepts?.[0]?.network || this.network,
       maxAmountRequired: body.maxAmountRequired || body.amount,
       currency: body.currency || 'USDC',
-      recipient: body.recipient || body.address,
+      recipient: body.recipient || body.address || body.payTo,
       extra: body.extra || {},
     };
   }
@@ -141,6 +162,24 @@ export class X402Client {
         signature,
       },
     };
+  }
+
+  /**
+   * Extract settlement receipt from PAYMENT-RESPONSE header.
+   * @param {Response} response
+   * @returns {Object|null}
+   * @private
+   */
+  _extractSettlementReceipt(response) {
+    const receiptHeader = response.headers?.get?.('PAYMENT-RESPONSE');
+    if (receiptHeader) {
+      try {
+        return JSON.parse(Buffer.from(receiptHeader, 'base64').toString());
+      } catch {
+        return null;
+      }
+    }
+    return null;
   }
 
   /**
