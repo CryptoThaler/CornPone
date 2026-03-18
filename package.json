@@ -1,0 +1,14 @@
+{
+  "name": "cornpone",
+  "version": "1.0.0",
+  "description": "Agentic Finance Sub Agent - MPP/x402 protocol implementation for autonomous machine payments",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test src/**/*.test.js"
+  },
+  "keywords": ["mpp", "x402", "agentic", "payments", "stripe", "machine-payments"],
+  "author": "CryptoThaler",
+  "license": "ISC"
+}
